@@ -32,12 +32,10 @@ import io.nats.client.api.StreamInfo;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.ProviderException;
-import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.logging.Level;
 
 // import software.amazon.kinesis.coordinator.Scheduler;
 
@@ -50,7 +48,7 @@ class NatsConsumer {
   private final Configuration config;
 
   private java.util.function.Consumer<Event> messageProcessor;
-  private String streamName;
+  private String subjectName;
   private AtomicBoolean resetOffset = new AtomicBoolean(false);
   private final Connection connection;
   private final JetStream jetStream;
@@ -61,25 +59,26 @@ class NatsConsumer {
 
   @Inject
   public NatsConsumer(
+      @EventGson Gson gson,
       Configuration config,
       Connection connection,
       JetStream jetStream,
-      JetStreamManagement jetStreamManagement,
-      @EventGson Gson gson) {
+      JetStreamManagement jetStreamManagement) {
+    this.gson = gson;
     this.config = config;
     this.connection = connection;
-    this.dispatcher = connection.createDispatcher();
     this.jetStream = jetStream;
     this.jetStreamManagement = jetStreamManagement;
-    this.gson = gson;
+    // create one dispatcher per consumer
+    this.dispatcher = connection.createDispatcher();
   }
 
-  public void subscribe(String streamName, java.util.function.Consumer<Event> messageProcessor) {
-    this.streamName = streamName;
+  public void subscribe(String subjectName, java.util.function.Consumer<Event> messageProcessor) {
+    this.subjectName = subjectName;
     this.messageProcessor = messageProcessor;
-    String subject = getOrCreateSubject(streamName);
-    logger.atInfo().log("NATS consumer - subscribe to subject [%s]", streamName);
-    runReceiver(messageProcessor, subject);
+    String subject = getOrCreateSubject(subjectName);
+    subscription = runReceiver(messageProcessor, subject);
+    logger.atInfo().log("NATS consumer - subscribed to subject [%s]", subjectName);
   }
 
   private String getOrCreateSubject(String name) {
@@ -107,49 +106,43 @@ class NatsConsumer {
         name, sc.getName(), subjects);
   }
 
-  private void runReceiver(java.util.function.Consumer<Event> messageProcessor, String subject) {
+  private JetStreamSubscription runReceiver(
+      java.util.function.Consumer<Event> messageProcessor, String subject) {
     try {
-      this.subscription =
-          jetStream.subscribe(
-              subject,
-              dispatcher,
-              new MessageHandler() {
+      return jetStream.subscribe(
+          subject,
+          dispatcher,
+          new MessageHandler() {
 
-                @Override
-                public void onMessage(Message msg) throws InterruptedException {
-                  String json = new String(msg.getData(), StandardCharsets.UTF_8);
-                  Event e = gson.fromJson(json, Event.class);
-                  messageProcessor.accept(e);
-                  msg.ack();
-                  logger.atFine().log("NATS consumer - consumed and acked event '%s'", e);
-                }
-              },
-              false);
+            @Override
+            public void onMessage(Message msg) throws InterruptedException {
+              String json = new String(msg.getData(), StandardCharsets.UTF_8);
+              Event e = gson.fromJson(json, Event.class);
+              messageProcessor.accept(e);
+              msg.ack();
+              logger.atFine().log("NATS consumer - consumed and acked event '%s'", e);
+            }
+          },
+          false);
     } catch (IOException | JetStreamApiException e) {
       logger.atSevere().withCause(e).log(
           "NATS consumer - subscribing to subject [%s] failed", subject);
+      return null;
     }
   }
 
   public void shutdown() {
     try {
-      int shutdownTimeoutMs = config.getShutdownTimeoutMs();
-      Duration shutdownTimeout = Duration.ofMillis(shutdownTimeoutMs);
-      logger.atInfo().log(
-          "NATS consumer - Waiting up to '%s' milliseconds to complete shutdown of consumer of stream '%s'",
-          shutdownTimeoutMs, getStreamName());
+      subscription.unsubscribe();
       connection.closeDispatcher(dispatcher);
-      CompletableFuture<Boolean> f = connection.drain(shutdownTimeout);
-      connection.flush(shutdownTimeout);
-      f.get(shutdownTimeoutMs, TimeUnit.MILLISECONDS);
-      connection.close();
+      logger.at(Level.INFO).log(
+          "NATS consumer - consumer for subject '%s' was shutdown", subjectName);
     } catch (Exception e) {
       logger.atSevere().withCause(e).log(
-          "NATS consumer - error caught when shutting down consumer for stream %s",
+          "NATS consumer - error caught when shutting down consumer for subject %s",
           getStreamName());
     }
-    logger.atInfo().log(
-        "NATS consumer - shutdown consumer of stream %s completed.", getStreamName());
+    logger.atInfo().log("NATS consumer - shutdown consumer of subject %s completed.", subjectName);
   }
 
   public java.util.function.Consumer<Event> getMessageProcessor() {
@@ -157,7 +150,8 @@ class NatsConsumer {
   }
 
   public String getStreamName() {
-    return streamName;
+    // we map BrokerApi streams to NATS subjects
+    return subjectName;
   }
 
   public void resetOffset() {

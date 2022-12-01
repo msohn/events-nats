@@ -79,7 +79,7 @@ class Configuration {
             .maxAckPending(pluginConfig.getLong("maxAckPending", 1000L))
             .deliverPolicy(DeliverPolicy.All)
             .buildPushSubscribeOptions();
-    shutdownTimeoutMs = pluginConfig.getInt("shutdownTimeoutMs", 1000);
+    shutdownTimeoutMs = pluginConfig.getInt("shutdownTimeoutMs", 30000);
 
     logger.atInfo().log(
         "NATS client configuration: sendStreamEvents: %b, streamEventsSubject: %s, natsOptions: %s, publishOptions: %s",

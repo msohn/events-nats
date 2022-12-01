@@ -20,6 +20,7 @@ import com.google.common.flogger.FluentLogger;
 import com.google.gerrit.extensions.events.LifecycleListener;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
+import io.nats.client.Connection;
 import io.nats.client.JetStreamApiException;
 import io.nats.client.JetStreamManagement;
 import io.nats.client.api.StorageType;
@@ -27,8 +28,13 @@ import io.nats.client.api.StreamConfiguration;
 import io.nats.client.api.StreamInfo;
 import java.io.IOException;
 import java.security.ProviderException;
+import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 
 @Singleton
@@ -36,6 +42,7 @@ class NatsBrokerLifeCycleManager implements LifecycleListener {
   private static final FluentLogger logger = FluentLogger.forEnclosingClass();
 
   private final Configuration config;
+  private final Connection connection;
   private final Set<TopicSubscriber> consumers;
   private final BrokerApi brokerApi;
   private JetStreamManagement jetStreamManagement;
@@ -44,12 +51,14 @@ class NatsBrokerLifeCycleManager implements LifecycleListener {
   public NatsBrokerLifeCycleManager(
       Configuration config,
       JetStreamManagement jetStreamManagement,
-      Set<TopicSubscriber> consumers,
-      BrokerApi brokerApi) {
+      Connection connection,
+      BrokerApi brokerApi,
+      Set<TopicSubscriber> consumers) {
     this.config = config;
     this.jetStreamManagement = jetStreamManagement;
-    this.consumers = consumers;
+    this.connection = connection;
     this.brokerApi = brokerApi;
+    this.consumers = consumers;
   }
 
   @Override
@@ -96,6 +105,29 @@ class NatsBrokerLifeCycleManager implements LifecycleListener {
 
   @Override
   public void stop() {
+    drainConnection();
     brokerApi.disconnect();
+    try {
+      connection.close();
+    } catch (InterruptedException e) {
+      logger.at(Level.SEVERE).withCause(e).log(
+          "NATS broker - stopping connection failed with error");
+    }
+  }
+
+  private void drainConnection() {
+    try {
+      int shutdownTimeoutMs = config.getShutdownTimeoutMs();
+      Duration shutdownTimeout = Duration.ofMillis(shutdownTimeoutMs);
+      logger.atInfo().log(
+          "NATS consumer - Waiting up to '%s' milliseconds to drain connection to stream '%s'",
+          shutdownTimeoutMs, config.getStreamName());
+      CompletableFuture<Boolean> f = connection.drain(shutdownTimeout);
+      f.get(shutdownTimeoutMs, TimeUnit.MILLISECONDS);
+    } catch (TimeoutException e) {
+      logger.at(Level.WARNING).withCause(e).log("NATS broker - graceful shutdown failed with timeout");
+    } catch (InterruptedException | ExecutionException e) {
+      logger.at(Level.SEVERE).withCause(e).log("NATS broker - graceful shutdown failed with error");
+    }
   }
 }
