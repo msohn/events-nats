@@ -58,7 +58,7 @@ class Configuration {
 
     sendStreamEvents = pluginConfig.getBoolean("sendStreamEvents", false);
     streamName =
-        String.format("%s-%s", pluginConfig.getString("streamName", "gerrit"), gerritInstanceId);
+        String.format("%s-%s", pluginConfig.getString("streamName", "gerrit"), gerritServerId);
     isPublishAsync = pluginConfig.getBoolean("publishAsync", false);
     streamEventsSubject =
         getStringParam(pluginConfig, "streamEventsSubject", "gerrit_stream_events");
@@ -70,7 +70,7 @@ class Configuration {
     jetStreamOptions = new JetStreamOptions.Builder().build();
     publishOptions = new PublishOptions.Builder().stream(streamEventsSubject).build();
     publishThreads = pluginConfig.getInt("publishThreads", 1);
-    String consumerName = "consumer-" + gerritInstanceId;
+    String consumerName = "instance-" + gerritInstanceId;
     pushSubscribeOptions =
         ConsumerConfiguration.builder()
             .durable(consumerName)
