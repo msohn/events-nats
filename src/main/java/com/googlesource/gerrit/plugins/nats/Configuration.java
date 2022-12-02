@@ -36,17 +36,21 @@ import io.nats.client.api.DeliverPolicy;
 class Configuration {
   private static final FluentLogger logger = FluentLogger.forEnclosingClass();
 
-  Options natsOptions;
-
   private final boolean sendStreamEvents;
   private final String streamName;
-  private final JetStreamOptions jetStreamOptions;
   private final String streamEventsSubject;
   private final boolean isPublishAsync;
-  private final PublishOptions publishOptions;
   private final int publishThreads;
-  private final PushSubscribeOptions pushSubscribeOptions;
   private final int shutdownTimeoutMs;
+
+  private final Options natsOptions;
+  private final JetStreamOptions jetStreamOptions;
+  private final PublishOptions publishOptions;
+  private final PushSubscribeOptions pushSubscribeOptions;
+
+  private int ackWaitMs;
+
+  private long maxAckPending;
 
   @Inject
   public Configuration(
@@ -59,31 +63,47 @@ class Configuration {
     sendStreamEvents = pluginConfig.getBoolean("sendStreamEvents", false);
     streamName =
         String.format("%s-%s", pluginConfig.getString("streamName", "gerrit"), gerritServerId);
-    isPublishAsync = pluginConfig.getBoolean("publishAsync", false);
     streamEventsSubject =
         getStringParam(pluginConfig, "streamEventsSubject", "gerrit_stream_events");
-    String[] serverList = getStringListParam(pluginConfig, "server");
-    if (serverList == null || serverList.length == 0) {
-      serverList = new String[] {"nats://localhost:4222"};
-    }
-    natsOptions = new Options.Builder().servers(serverList).build();
+    isPublishAsync = pluginConfig.getBoolean("publishAsync", false);
+    publishThreads = pluginConfig.getInt("publishThreads", 1);
+    shutdownTimeoutMs = pluginConfig.getInt("shutdownTimeoutMs", 30000);
+    ackWaitMs = pluginConfig.getInt("ackWaitMs", 30000);
+    maxAckPending = pluginConfig.getLong("maxAckPending", 1000L);
+
+    natsOptions = new Options.Builder().servers(getServerUrls(pluginConfig)).build();
     jetStreamOptions = new JetStreamOptions.Builder().build();
     publishOptions = new PublishOptions.Builder().stream(streamEventsSubject).build();
-    publishThreads = pluginConfig.getInt("publishThreads", 1);
     String consumerName = "instance-" + gerritInstanceId;
     pushSubscribeOptions =
         ConsumerConfiguration.builder()
             .durable(consumerName)
             .ackPolicy(AckPolicy.Explicit)
-            .ackWait(pluginConfig.getInt("ackWaitMs", 60000))
-            .maxAckPending(pluginConfig.getLong("maxAckPending", 1000L))
+            .ackWait(ackWaitMs)
+            .maxAckPending(maxAckPending)
             .deliverPolicy(DeliverPolicy.All)
             .buildPushSubscribeOptions();
-    shutdownTimeoutMs = pluginConfig.getInt("shutdownTimeoutMs", 30000);
 
     logger.atInfo().log(
-        "NATS client configuration: sendStreamEvents: %b, streamEventsSubject: %s, natsOptions: %s, publishOptions: %s",
-        sendStreamEvents, streamEventsSubject, natsOptions, publishOptions);
+        "NATS client configuration: sendStreamEvents: %b, streamName %s, streamEventsSubject: %s,"
+            + " isPublishAsync: %b, publishThreads: %d, shutdownTimeoutMs: %d, ackWaitMs: %d,"
+            + " maxAckPending: %d",
+        sendStreamEvents,
+        streamName,
+        streamEventsSubject,
+        isPublishAsync,
+        publishThreads,
+        shutdownTimeoutMs,
+        ackWaitMs,
+        maxAckPending);
+  }
+
+  private static String[] getServerUrls(PluginConfig pluginConfig) {
+    String[] serverList = getStringListParam(pluginConfig, "server");
+    if (serverList == null || serverList.length == 0) {
+      serverList = new String[] {"nats://localhost:4222"};
+    }
+    return serverList;
   }
 
   private static String getStringParam(

@@ -125,7 +125,8 @@ class NatsBrokerLifeCycleManager implements LifecycleListener {
       CompletableFuture<Boolean> f = connection.drain(shutdownTimeout);
       f.get(shutdownTimeoutMs, TimeUnit.MILLISECONDS);
     } catch (TimeoutException e) {
-      logger.at(Level.WARNING).withCause(e).log("NATS broker - graceful shutdown failed with timeout");
+      logger.at(Level.WARNING).withCause(e).log(
+          "NATS broker - graceful shutdown failed with timeout");
     } catch (InterruptedException | ExecutionException e) {
       logger.at(Level.SEVERE).withCause(e).log("NATS broker - graceful shutdown failed with error");
     }
